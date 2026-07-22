@@ -1,0 +1,21 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+FA/
+venv/
+env/
+.env
+
+# Data and SQLite
+data/
+*.db
+*.sqlite3
+
+# Logs and quarantine
+*.log
+quarantine/
+
+project-blueprint.md
