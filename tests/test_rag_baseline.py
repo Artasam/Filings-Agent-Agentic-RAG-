@@ -21,8 +21,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from qdrant_client import QdrantClient
 
 from Ingestion.storage import Storage, make_id
+from RAG.generation import _format_context
 from RAG.indexer import COLLECTION_NAME, build_index
-from RAG.naive_rag import RetrievedChunk, _format_context, retrieve
+from RAG.pipeline_naive import query
+from RAG.retrievers.dense import retrieve_dense as retrieve
+from RAG.schema import RetrievedChunk
 
 
 def _seed_db(db_path: Path) -> int:

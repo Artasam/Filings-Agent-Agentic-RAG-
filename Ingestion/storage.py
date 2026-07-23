@@ -202,3 +202,28 @@ class Storage:
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
                 out[table] = cur.fetchone()[0]
             return out
+
+    def get_cik_for_ticker(self, ticker: str) -> str | None:
+        """Resolves a ticker symbol to its CIK."""
+        with self.cursor() as cur:
+            cur.execute("SELECT cik FROM companies WHERE ticker = ?", (ticker.upper(),))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    def get_xbrl_facts(
+        self, cik: str, concept: str | None = None, fiscal_year: int | None = None,
+    ) -> list[dict]:
+        """Queries structured XBRL facts by CIK, with optional concept/year filters."""
+        with self.cursor() as cur:
+            sql = "SELECT concept, unit, value, fiscal_year, fiscal_period, form FROM xbrl_facts WHERE cik = ?"
+            params: list = [cik]
+            if concept:
+                sql += " AND concept = ?"
+                params.append(concept)
+            if fiscal_year:
+                sql += " AND fiscal_year = ?"
+                params.append(fiscal_year)
+            cur.execute(sql, params)
+            columns = [desc[0] for desc in cur.description]
+            return [dict(zip(columns, row)) for row in cur.fetchall()]
+

@@ -1,9 +1,11 @@
-# FilingsAgent — Phase 1 & 2: Ingestion & Naive RAG Baseline
+# FilingsAgent — Phases 1 to 4: From Ingestion to Agentic RAG
 
-This repository covers **Phase 1 (Data Pipeline)** and **Phase 2 (Naive RAG Baseline)** of the FilingsAgent blueprint. 
+This repository covers the complete end-to-end implementation of the FilingsAgent blueprint.
 
-**Phase 1** handles the ingestion foundation: **download → validate → section-parse → chunk → store** for SEC 10-K/10-Q filings, plus a **structured XBRL facts** fetcher.
-**Phase 2** implements the retrieval and generation baseline: embedding the chunks with `nomic-embed-text-v1.5`, indexing into Qdrant, and generating answers grounded in context via Google's Gemini LLM.
+- **Phase 1 (Ingestion)**: Download → validate → section-parse → chunk → store for SEC 10-K/10-Q filings, plus a structured XBRL facts fetcher.
+- **Phase 2 (Naive RAG)**: Baseline retrieval generation via Qdrant (`nomic-embed-text-v1.5`) and Gemini 2.0 Flash.
+- **Phase 3 (Hybrid RAG)**: Improved retrieval accuracy by combining Dense Vector Search (Qdrant) with Sparse Keyword Search (BM25) using Reciprocal Rank Fusion (RRF), followed by a Cross-Encoder reranker (`BAAI/bge-reranker-base`).
+- **Phase 4 (Agentic Routing)**: LangGraph state machine that intelligently routes queries. It sends qualitative questions to the Hybrid Vector Search and quantitative financial queries to a direct SQL lookup (XBRL database), complete with an LLM grader and self-correction retry loop.
 
 ## Install
 
@@ -11,15 +13,15 @@ This repository covers **Phase 1 (Data Pipeline)** and **Phase 2 (Naive RAG Base
 pip install -r requirements.txt
 ```
 
-## Run the tests first (no network required)
+## Run the offline tests (no network required)
 
 ```bash
 # Test Phase 1 (Ingestion)
 python -m pytest tests/test_offline.py -v
 python -m pytest tests/test_pipeline_smoke.py -v
 
-# Test Phase 2 (RAG Baseline)
-python -m pytest tests/test_rag_baseline.py -v
+# Test Phase 2, 3, & 4 (RAG Baseline, Hybrid, Agentic)
+python -m pytest tests/test_rag_baseline.py tests/test_hybrid_rag.py tests/test_agent.py -v
 ```
 
 `test_offline.py` unit-tests parsing/chunking/storage/guardrails in
@@ -65,24 +67,38 @@ Open the CSV and hand-write `question` / `expected_answer` for each row.
 ## What's actually in here
 
 ```
+Agent/
+  graph.py           LangGraph state machine wiring (router -> tools -> generate -> grade)
+  nodes.py           pure Python functions for each node in the graph
+  state.py           TypedDict defining the state passed through the graph
 Ingestion/
-  config.py         all tunables: rate limits, retry policy, chunk sizing, target sections/concepts
+  config.py          all tunables: rate limits, retry policy, chunk sizing, target sections/concepts
   guardrails.py      RateLimiter, retry_with_backoff, ContentValidator, Quarantine, logging
-  edgar_client.py     rate-limited + retrying wrapper around SEC's public endpoints
+  edgar_client.py    rate-limited + retrying wrapper around SEC's public endpoints
   section_parser.py  splits raw 10-K HTML into Item 1 / 1A / 7 / 7A / 8
   chunker.py         paragraph-aware, token-budgeted chunking with overlap
-  xbrl_fetcher.py     flattens SEC's nested XBRL company-facts JSON into rows
-  storage.py          SQLite schema + idempotent upserts (WAL mode)
-  pipeline.py         orchestrates the above with bounded concurrency
-  eval_seed.py        samples stored chunks/facts into an eval-authoring template
-  cli.py              `ingest` and `seed-eval` commands
+  xbrl_fetcher.py    flattens SEC's nested XBRL company-facts JSON into rows
+  storage.py         SQLite schema + idempotent upserts (WAL mode) + SQL retrieval
+  pipeline.py        orchestrates the above with bounded concurrency
+  eval_seed.py       samples stored chunks/facts into an eval-authoring template
+  cli.py             `ingest` and `seed-eval` commands
 RAG/
-  indexer.py          embeds chunks with nomic-embed-text-v1.5 and upserts to Qdrant
-  naive_rag.py        baseline dense retrieval + Gemini 2.0 Flash generation pipeline
+  indexer.py         embeds chunks with nomic-embed-text-v1.5 and upserts to Qdrant
+  generation.py      LLM generation and context formatting
+  pipeline_naive.py  baseline dense retrieval + Gemini generation
+  pipeline_hybrid.py dense + sparse + RRF + reranking + generation
+  schema.py          core data types (RetrievedChunk, RAGResult)
+  retrievers/
+    dense.py         Qdrant vector search
+    sparse.py        BM25 exact keyword matching
+    fusion.py        Reciprocal Rank Fusion (RRF)
+    reranker.py      Cross-encoder scoring (BAAI/bge-reranker-base)
 tests/
   test_offline.py         unit tests for Phase 1, no network
   test_pipeline_smoke.py  full pipeline run against a mocked EDGAR client
-  test_rag_baseline.py    offline tests for Qdrant indexing and retrieval logic
+  test_rag_baseline.py    offline tests for Qdrant indexing and naive logic
+  test_hybrid_rag.py      offline tests for BM25, RRF, and cross-encoder reranking
+  test_agent.py           offline tests for LangGraph nodes, routing, and self-correction
 ```
 
 ## Guardrails baked in (not bolted on)
