@@ -75,6 +75,7 @@ def test_sql_search_returns_facts():
              "2023-10-01", "2024-09-28", 2024, "FY", "10-K", "acc-1"),
         ])
 
+        # Mock keys match SQLParams schema fields: ticker, concept, fiscal_year
         client = _mock_client({"ticker": "AAPL", "concept": "NetIncomeLoss", "fiscal_year": 2024})
         result = sql_search({"question": "What was Apple's net income in 2024?"}, client, storage)
         storage.close()
@@ -88,7 +89,8 @@ def test_sql_search_missing_ticker_returns_empty():
     with tempfile.TemporaryDirectory() as tmp:
         db_path = Path(tmp) / "test.db"
         storage = Storage(db_path)
-        client = _mock_client({"ticker": "UNKNOWN", "concept": "Revenues", "fiscal_year": 2024})
+        # ticker=null makes the node short-circuit before hitting the DB
+        client = _mock_client({"ticker": None, "concept": "Revenues", "fiscal_year": 2024})
         result = sql_search({"question": "What was XYZ's revenue?"}, client, storage)
         storage.close()
 
@@ -100,14 +102,15 @@ def test_sql_search_missing_ticker_returns_empty():
 # ---------------------------------------------------------------------------
 
 def test_grader_pass():
-    client = _mock_client({"pass": True})
+    # Pydantic schema field is 'passed', not 'pass'
+    client = _mock_client({"passed": True})
     state = {"question": "test?", "generation": "The answer.", "retries": 0}
     result = grade_answer(state, client)
     assert result["route"] == "pass"
 
 
 def test_grader_fail_triggers_retry():
-    client = _mock_client({"pass": False})
+    client = _mock_client({"passed": False})
     state = {"question": "test?", "generation": "Bad answer.", "retries": 0}
     result = grade_answer(state, client)
     assert result["route"] == "retry"
@@ -116,7 +119,7 @@ def test_grader_fail_triggers_retry():
 
 def test_grader_fail_at_cap_returns_insufficient():
     """When retries hit MAX_RETRIES, grader should stop retrying."""
-    client = _mock_client({"pass": False})
+    client = _mock_client({"passed": False})
     state = {"question": "test?", "generation": "Bad answer.", "retries": MAX_RETRIES}
     result = grade_answer(state, client)
     assert result["route"] == "fail_cap"

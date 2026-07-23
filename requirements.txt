@@ -7,3 +7,4 @@ sentence-transformers
 google-genai
 rank-bm25
 langgraph
+pydantic

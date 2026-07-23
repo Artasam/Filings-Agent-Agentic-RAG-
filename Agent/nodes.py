@@ -5,13 +5,19 @@ Each function takes the current AgentState and any injected resources,
 performs its task, and returns a partial state update dict.  Resources
 (LLM client, Qdrant, models) are bound via closures in graph.py — this
 keeps each function pure and independently testable.
+
+Structured outputs use Pydantic schemas + response_schema in the Gemini
+API config, which enforces the shape at the API level rather than just
+asking nicely with a prompt. This is far more reliable than
+response_mime_type="application/json" + json.loads().
 """
 from __future__ import annotations
 
-import json
 import logging
+from typing import Literal
 
 from google import genai
+from pydantic import BaseModel, Field
 
 from Ingestion.config import XBRL_CONCEPTS
 from Ingestion.storage import Storage
@@ -19,21 +25,53 @@ from RAG.retrievers.dense import retrieve_dense
 from RAG.retrievers.fusion import reciprocal_rank_fusion
 from RAG.retrievers.reranker import rerank
 from RAG.retrievers.sparse import BM25Retriever
-from RAG.schema import RetrievedChunk
 
 logger = logging.getLogger("filingsagent.agent")
 
 MAX_RETRIES = 2
 
+
 # ---------------------------------------------------------------------------
-# Prompts
+# Pydantic schemas for structured LLM outputs
+# ---------------------------------------------------------------------------
+
+class RouteDecision(BaseModel):
+    """Schema for the router node output."""
+    route: Literal["vector_search", "sql_search", "out_of_scope"] = Field(
+        description="The retrieval path to take for this query."
+    )
+
+
+class SQLParams(BaseModel):
+    """Schema for the SQL parameter extraction node output."""
+    ticker: str | None = Field(
+        description="Company ticker symbol in uppercase (e.g. AAPL), or null if not mentioned."
+    )
+    concept: str | None = Field(
+        description="The closest XBRL us-gaap concept name (e.g. NetIncomeLoss), or null."
+    )
+    fiscal_year: int | None = Field(
+        description="The fiscal year as a 4-digit integer (e.g. 2024), or null."
+    )
+
+
+class GraderDecision(BaseModel):
+    """Schema for the grader node output."""
+    passed: bool = Field(
+        description="True if the answer is grounded in the context, False if it is insufficient or hallucinated."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prompts  (no longer need to say "respond with ONLY a JSON object" —
+# the schema enforces that at the API level)
 # ---------------------------------------------------------------------------
 
 ROUTER_PROMPT = """\
-You are a query router for a financial analysis system that has access to
+You are a query router for a financial analysis system with access to
 SEC 10-K filing documents and structured XBRL financial data.
 
-Classify the user's question into exactly one category:
+Classify the user's question into exactly one of:
 - "vector_search": qualitative questions about filings (risk factors,
   business strategy, management discussion, competitive landscape).
 - "sql_search": questions asking for a specific financial number
@@ -41,20 +79,13 @@ Classify the user's question into exactly one category:
   company and/or time period.
 - "out_of_scope": questions unrelated to SEC filings or financial analysis.
 
-Respond with ONLY a JSON object, example: {{"route": "vector_search"}}
-
 Question: {question}"""
 
 SQL_EXTRACT_PROMPT = """\
 Extract the structured parameters from the following financial question.
 
-Available XBRL concepts (pick the closest match):
+Available XBRL concepts (pick the closest match or null):
 {concepts}
-
-Respond with ONLY a JSON object with these fields:
-- "ticker": the company ticker symbol (uppercase), or null
-- "concept": the closest XBRL concept name from the list above, or null
-- "fiscal_year": the fiscal year as an integer, or null
 
 Question: {question}"""
 
@@ -82,8 +113,28 @@ Question: {question}
 Answer: {answer}
 
 Does the answer directly address the question with information from
-the context (not fabricated)? Respond with ONLY a JSON object:
-{{"pass": true}} or {{"pass": false}}"""
+the context (not fabricated)?"""
+
+
+# ---------------------------------------------------------------------------
+# Helper: single place to call Gemini with a response_schema
+# ---------------------------------------------------------------------------
+
+def _structured_call(client: genai.Client, prompt: str, schema: type[BaseModel]) -> BaseModel:
+    """
+    Calls Gemini with a Pydantic schema enforced at the API level via
+    response_schema.  This guarantees the output matches the schema shape,
+    unlike response_mime_type="application/json" which only hints at it.
+    """
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+        config=genai.types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=schema,
+        ),
+    )
+    return schema.model_validate_json(response.text)
 
 
 # ---------------------------------------------------------------------------
@@ -93,17 +144,9 @@ the context (not fabricated)? Respond with ONLY a JSON object:
 def route_question(state: dict, client: genai.Client) -> dict:
     """Classifies the question into vector_search, sql_search, or out_of_scope."""
     prompt = ROUTER_PROMPT.format(question=state["question"])
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            response_mime_type="application/json",
-        ),
-    )
-    result = json.loads(response.text)
-    route = result.get("route", "vector_search")
-    logger.info("Router decided: %s", route)
-    return {"route": route}
+    decision: RouteDecision = _structured_call(client, prompt, RouteDecision)
+    logger.info("Router decided: %s", decision.route)
+    return {"route": decision.route}
 
 
 def vector_search(state: dict, qdrant_client, embed_model, bm25, reranker) -> dict:
@@ -126,34 +169,24 @@ def vector_search(state: dict, qdrant_client, embed_model, bm25, reranker) -> di
 
 
 def sql_search(state: dict, client: genai.Client, storage: Storage) -> dict:
-    """Extracts query params via LLM, then looks up XBRL facts in SQLite."""
+    """Extracts query params via LLM (structured output), then looks up XBRL facts in SQLite."""
     concepts_str = ", ".join(XBRL_CONCEPTS)
     prompt = SQL_EXTRACT_PROMPT.format(
         question=state["question"], concepts=concepts_str,
     )
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            response_mime_type="application/json",
-        ),
-    )
-    params = json.loads(response.text)
-    ticker = params.get("ticker")
-    concept = params.get("concept")
-    fiscal_year = params.get("fiscal_year")
+    params: SQLParams = _structured_call(client, prompt, SQLParams)
 
-    if not ticker:
+    if not params.ticker:
         logger.warning("SQL search: no ticker extracted from question")
         return {"sql_results": []}
 
-    cik = storage.get_cik_for_ticker(ticker)
+    cik = storage.get_cik_for_ticker(params.ticker)
     if not cik:
-        logger.warning("SQL search: ticker %s not found in DB", ticker)
+        logger.warning("SQL search: ticker %s not found in DB", params.ticker)
         return {"sql_results": []}
 
-    facts = storage.get_xbrl_facts(cik, concept=concept, fiscal_year=fiscal_year)
-    logger.info("SQL search: %d facts for %s/%s/%s", len(facts), ticker, concept, fiscal_year)
+    facts = storage.get_xbrl_facts(cik, concept=params.concept, fiscal_year=params.fiscal_year)
+    logger.info("SQL search: %d facts for %s/%s/%s", len(facts), params.ticker, params.concept, params.fiscal_year)
     return {"sql_results": facts}
 
 
@@ -185,6 +218,7 @@ def generate_answer(state: dict, client: genai.Client) -> dict:
     context = "\n\n---\n\n".join(context_parts)
     prompt = GENERATE_PROMPT.format(context=f"Context:\n{context}", question=state["question"])
 
+    # Generation is free-form text, no structured schema needed here
     response = client.models.generate_content(
         model="gemini-2.0-flash",
         contents=prompt,
@@ -195,24 +229,16 @@ def generate_answer(state: dict, client: genai.Client) -> dict:
 def grade_answer(state: dict, client: genai.Client) -> dict:
     """
     Checks if the generation adequately answers the question.
-    Returns the updated retry count.  The routing decision (pass vs retry)
+    Returns the updated routing state. The edge decision (pass vs retry)
     is handled by the conditional edge in graph.py.
     """
     prompt = GRADER_PROMPT.format(
         question=state["question"], answer=state.get("generation", ""),
     )
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config=genai.types.GenerateContentConfig(
-            response_mime_type="application/json",
-        ),
-    )
-    result = json.loads(response.text)
-    passed = result.get("pass", True)
+    decision: GraderDecision = _structured_call(client, prompt, GraderDecision)
     retries = state.get("retries", 0)
 
-    if passed:
+    if decision.passed:
         logger.info("Grader: PASS")
         return {"route": "pass"}
     elif retries >= MAX_RETRIES:
