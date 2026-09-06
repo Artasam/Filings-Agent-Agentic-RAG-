@@ -1,7 +1,7 @@
 """
 Hybrid RAG baseline pipeline.
 
-Orchestrates dense + sparse retrieval, fusion, reranking, and Gemini generation.
+Orchestrates dense + sparse retrieval, fusion, reranking, and Groq generation.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def query(
     reranker_model: CrossEncoder | None = None,
     retrieval_top_k: int = 20,
     final_top_k: int = 5,
-    llm_model_name: str = "gemini-2.0-flash",
+    llm_model_name: str | None = None,
 ) -> RAGResult:
     """
     Full hybrid pipeline: dense + sparse → RRF → rerank → generate.

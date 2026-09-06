@@ -1,14 +1,20 @@
 """
 LLM Generation component for the RAG pipelines.
-Handles formatting context and calling the Gemini API.
+Handles formatting context and calling the Groq API.
 """
 from __future__ import annotations
 
+import logging
 import os
+import time
 
-from google import genai
+from groq import Groq
 
 from .schema import RetrievedChunk
+
+logger = logging.getLogger("filingsagent.rag.generation")
+
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 SYSTEM_PROMPT = """\
 You are a financial analyst assistant.  You answer questions about SEC 10-K \
@@ -40,25 +46,42 @@ def _format_context(chunks: list[RetrievedChunk]) -> str:
 def generate(
     question: str,
     chunks: list[RetrievedChunk],
-    model_name: str = "gemini-2.0-flash",
+    model_name: str | None = None,
 ) -> str:
-    """Calls Gemini to generate an answer grounded in retrieved chunks."""
-    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    """Calls Groq to generate an answer grounded in retrieved chunks."""
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise EnvironmentError(
-            "Set GOOGLE_API_KEY or GEMINI_API_KEY environment variable. "
-            "Get a free key at https://aistudio.google.com/apikey"
+            "Set GROQ_API_KEY environment variable. "
+            "Get a free key at https://console.groq.com/keys"
         )
 
-    client = genai.Client(api_key=api_key)
+    model = model_name or os.environ.get("GROQ_MODEL", DEFAULT_MODEL)
+    client = Groq(api_key=api_key)
     context = _format_context(chunks)
     user_prompt = f"Context:\n{context}\n\nQuestion: {question}"
 
-    response = client.models.generate_content(
-        model=model_name,
-        contents=user_prompt,
-        config=genai.types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-        ),
-    )
-    return response.text
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            chat_completion = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.0,
+            )
+            return chat_completion.choices[0].message.content or ""
+        except Exception as exc:
+            err_str = str(exc)
+            if "429" in err_str or "rate_limit" in err_str.lower():
+                wait_time = 15 if attempt == 0 else 25
+                logger.warning(
+                    "Groq API rate limit (429) hit in generation. Waiting %ds before retry (%d/%d)...",
+                    wait_time, attempt + 1, max_retries
+                )
+                time.sleep(wait_time)
+            else:
+                raise
+    raise RuntimeError("Max retries exceeded due to Groq rate limits.")

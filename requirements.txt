@@ -5,6 +5,14 @@ pytest
 qdrant-client
 sentence-transformers
 google-genai
+groq
 rank-bm25
 langgraph
 pydantic
+ragas
+pandas
+langchain-google-genai
+langchain-groq
+einops
+huggingface_hub
+python-dotenv

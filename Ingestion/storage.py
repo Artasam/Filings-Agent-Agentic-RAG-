@@ -215,7 +215,7 @@ class Storage:
     ) -> list[dict]:
         """Queries structured XBRL facts by CIK, with optional concept/year filters."""
         with self.cursor() as cur:
-            sql = "SELECT concept, unit, value, fiscal_year, fiscal_period, form FROM xbrl_facts WHERE cik = ?"
+            sql = "SELECT fact_id, concept, unit, value, fiscal_year, fiscal_period, form FROM xbrl_facts WHERE cik = ?"
             params: list = [cik]
             if concept:
                 sql += " AND concept = ?"

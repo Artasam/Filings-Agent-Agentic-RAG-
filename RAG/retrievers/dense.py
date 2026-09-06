@@ -4,8 +4,9 @@ Dense vector retriever using Qdrant.
 from __future__ import annotations
 
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
+from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+from RAG.hf_api_embedder import HFInferenceEmbedder
 from ..indexer import COLLECTION_NAME
 from ..schema import RetrievedChunk
 
@@ -13,17 +14,28 @@ from ..schema import RetrievedChunk
 def retrieve_dense(
     query: str,
     client: QdrantClient,
-    model: SentenceTransformer,
+    model: HFInferenceEmbedder,
     top_k: int = 5,
+    filters: dict | None = None,
 ) -> list[RetrievedChunk]:
     """Dense vector search against the Qdrant filing_chunks collection."""
-    # nomic-embed-text-v1.5 requires 'search_query:' prefix for queries
-    query_vector = model.encode("search_query: " + query).tolist()
+    # BAAI/bge-m3 does not require instruction prefixes — send raw query text.
+    query_vector = model.encode(query).tolist()[0]
+
+    qdrant_filter = None
+    if filters:
+        qdrant_filter = Filter(
+            must=[
+                FieldCondition(key=k, match=MatchValue(value=v))
+                for k, v in filters.items()
+            ]
+        )
 
     results = client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vector,
         limit=top_k,
+        query_filter=qdrant_filter,
         with_payload=True,
     )
 

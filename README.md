@@ -3,7 +3,7 @@
 This repository covers the complete end-to-end implementation of the FilingsAgent blueprint.
 
 - **Phase 1 (Ingestion)**: Download → validate → section-parse → chunk → store for SEC 10-K/10-Q filings, plus a structured XBRL facts fetcher.
-- **Phase 2 (Naive RAG)**: Baseline retrieval generation via Qdrant (`nomic-embed-text-v1.5`) and Gemini 2.0 Flash.
+- **Phase 2 (Naive RAG)**: Baseline retrieval generation via Qdrant (`nomic-embed-text-v1.5`) and Gemini 3.6 Flash.
 - **Phase 3 (Hybrid RAG)**: Improved retrieval accuracy by combining Dense Vector Search (Qdrant) with Sparse Keyword Search (BM25) using Reciprocal Rank Fusion (RRF), followed by a Cross-Encoder reranker (`BAAI/bge-reranker-base`).
 - **Phase 4 (Agentic Routing)**: LangGraph state machine that intelligently routes queries. It sends qualitative questions to the Hybrid Vector Search and quantitative financial queries to a direct SQL lookup (XBRL database), complete with an LLM grader and self-correction retry loop.
 

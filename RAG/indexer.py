@@ -21,16 +21,17 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
-from sentence_transformers import SentenceTransformer
+
+from .hf_api_embedder import HFInferenceEmbedder
 
 from Ingestion.storage import Storage
 
 logger = logging.getLogger("filingsagent.rag")
 
-EMBEDDING_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
+EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 COLLECTION_NAME = "filing_chunks"
-EMBEDDING_DIM = 768  # nomic-embed-text-v1.5 output dimension
-BATCH_SIZE = 64       # encode+upsert this many chunks at a time
+EMBEDDING_DIM = 1024  # BAAI/bge-m3 dense vector output dimension
+BATCH_SIZE = 32       # encode+upsert this many chunks at a time (safe for HF API)
 
 
 def _load_chunks_from_db(db_path: Path) -> list[dict]:
@@ -56,7 +57,7 @@ def _load_chunks_from_db(db_path: Path) -> list[dict]:
 def build_index(
     db_path: Path,
     qdrant_path: str | None = None,
-    model: SentenceTransformer | None = None,
+    model: HFInferenceEmbedder | None = None,
     client: QdrantClient | None = None,
 ) -> int:
     """
@@ -78,8 +79,8 @@ def build_index(
         return 0
 
     if model is None:
-        logger.info("Loading embedding model: %s", EMBEDDING_MODEL_NAME)
-        model = SentenceTransformer(EMBEDDING_MODEL_NAME, trust_remote_code=True)
+        logger.info("Using HF API Embedder for: %s", EMBEDDING_MODEL_NAME)
+        model = HFInferenceEmbedder(EMBEDDING_MODEL_NAME)
 
     if client is None:
         if qdrant_path:
@@ -130,3 +131,12 @@ def build_index(
 
     logger.info("Indexing complete: %d points in collection '%s'", total_indexed, COLLECTION_NAME)
     return total_indexed
+
+if __name__ == "__main__":
+    import sys
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    db_path = Path("data/filingsagent.db")
+    if not db_path.exists():
+        print(f"Error: {db_path} not found. Run Ingestion.cli first.")
+        sys.exit(1)
+    build_index(db_path, qdrant_path="data/qdrant_store")
